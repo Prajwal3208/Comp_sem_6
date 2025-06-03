@@ -1,0 +1,231 @@
+%%writefile Min_Max.cu
+#include <iostream>
+#include <vector>
+#include <climits>
+#include <cuda_runtime.h>
+
+
+#define CUDA_CHECK(err) do { \
+    if (err != cudaSuccess) { \
+        std::cerr << "CUDA Error: " << cudaGetErrorString(err) << " at " << __FILE__ << ":" << __LINE__ << std::endl; \
+        exit(1); \
+    } \
+} while(0)
+
+__global__ void min_reduction_kernel(int* arr, int size, int* result) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < size) {
+        atomicMin(result, arr[tid]);
+    }
+}
+
+__global__ void max_reduction_kernel(int* arr, int size, int* result) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < size) {
+        atomicMax(result, arr[tid]);
+    }
+}
+
+__global__ void sum_reduction_kernel(int* arr, int size, int* result) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid < size) {
+        atomicAdd(result, arr[tid]);
+    }
+}
+
+int main() {
+    std::vector arr = {5, 2, 9, 1, 7, 6, 8, 3, 4};
+    int size = arr.size();
+    int* d_arr;
+    int* d_result;
+    int result_min = INT_MAX;
+    int result_max = INT_MIN;
+    int result_sum = 0;
+
+    // Allocate device memory
+    CUDA_CHECK(cudaMalloc(&d_arr, size * sizeof(int)));
+    CUDA_CHECK(cudaMalloc(&d_result, sizeof(int)));
+
+    // Copy data to device
+    CUDA_CHECK(cudaMemcpy(d_arr, arr.data(), size * sizeof(int), cudaMemcpyHostToDevice));
+
+    // Minimum reduction
+    CUDA_CHECK(cudaMemcpy(d_result, &result_min, sizeof(int), cudaMemcpyHostToDevice));
+    min_reduction_kernel<<<(size + 255)/256, 256>>>(d_arr, size, d_result);
+    CUDA_CHECK(cudaMemcpy(&result_min, d_result, sizeof(int), cudaMemcpyDeviceToHost));
+
+    // Maximum reduction
+    CUDA_CHECK(cudaMemcpy(d_result, &result_max, sizeof(int), cudaMemcpyHostToDevice));
+    max_reduction_kernel<<<(size + 255)/256, 256>>>(d_arr, size, d_result);
+    CUDA_CHECK(cudaMemcpy(&result_max, d_result, sizeof(int), cudaMemcpyDeviceToHost));
+
+    // Sum reduction
+    result_sum = 0; // Reset
+    CUDA_CHECK(cudaMemcpy(d_result, &result_sum, sizeof(int), cudaMemcpyHostToDevice));
+    sum_reduction_kernel<<<(size + 255)/256, 256>>>(d_arr, size, d_result);
+    CUDA_CHECK(cudaMemcpy(&result_sum, d_result, sizeof(int), cudaMemcpyDeviceToHost));
+
+    std::cout << "Minimum: " << result_min << "\n"
+              << "Maximum: " << result_max << "\n"
+              << "Sum: " << result_sum << "\n";
+    std::cout << "Average: " << static_cast<float>(result_sum) / size << std::endl;
+
+
+    // Cleanup
+    CUDA_CHECK(cudaFree(d_arr));
+    CUDA_CHECK(cudaFree(d_result));
+
+    return 0;
+}
+
+
+
+
+
+%%writefile matrix_mul.cu
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <cuda_runtime.h>
+
+#define N 16  // You can increase this to 512 or 1024 for bigger matrices
+
+// CUDA Kernel for Matrix Multiplication
+__global__ void matrixMulKernel(int *A, int *B, int *C, int width) {
+    int row = blockIdx.y * blockDim.y + threadIdx.y;
+    int col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (row < width && col < width) {
+        int sum = 0;
+        for (int k = 0; k < width; k++) {
+            sum += A[row * width + k] * B[k * width + col];
+        }
+        C[row * width + col] = sum;
+    }
+}
+
+void fillMatrix(int *mat, int width) {
+    for (int i = 0; i < width * width; i++) {
+        mat[i] = rand() % 10;
+    }
+}
+
+void printMatrix(int *mat, int width) {
+    for (int i = 0; i < width; i++) {
+        for (int j = 0; j < width; j++) {
+            printf("%4d ", mat[i * width + j]);
+        }
+        printf("\n");
+    }
+}
+
+int main() {
+    int size = N * N * sizeof(int);
+
+    // Allocate host memory
+    int *h_A = (int *)malloc(size);
+    int *h_B = (int *)malloc(size);
+    int *h_C = (int *)malloc(size);
+
+    fillMatrix(h_A, N);
+    fillMatrix(h_B, N);
+
+    // Allocate device memory
+    int *d_A, *d_B, *d_C;
+    cudaMalloc((void **)&d_A, size);
+    cudaMalloc((void **)&d_B, size);
+    cudaMalloc((void **)&d_C, size);
+
+    cudaMemcpy(d_A, h_A, size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, h_B, size, cudaMemcpyHostToDevice);
+
+    dim3 dimBlock(16, 16);
+    dim3 dimGrid((N + dimBlock.x - 1) / dimBlock.x,
+                 (N + dimBlock.y - 1) / dimBlock.y);
+
+    // Correct kernel launch
+    matrixMulKernel<<<dimGrid, dimBlock>>>(d_A, d_B, d_C, N);
+
+    cudaMemcpy(h_C, d_C, size, cudaMemcpyDeviceToHost);
+
+    printf("Matrix A:\n");
+    printMatrix(h_A, N);
+    printf("\nMatrix B:\n");
+    printMatrix(h_B, N);
+    printf("\nMatrix C (A x B):\n");
+    printMatrix(h_C, N);
+
+    free(h_A); free(h_B); free(h_C);
+    cudaFree(d_A); cudaFree(d_B); cudaFree(d_C);
+
+    return 0;
+}
+
+
+
+
+%%writefile vector_add.cu
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <cuda_runtime.h>
+
+#define N 1000000  // 1 million elements
+
+// CUDA Kernel to perform vector addition
+__global__ void vectorAdd(int *a, int *b, int *c, int n) {
+    int idx = threadIdx.x + blockDim.x * blockIdx.x;
+    if (idx < n) {
+        c[idx] = a[idx] + b[idx];
+    }
+}
+
+// Fill array with random integers
+void fillArray(int *arr, int n) {
+    for (int i = 0; i < n; i++) {
+        arr[i] = rand() % 100;
+    }
+}
+
+int main() {
+    int size = N * sizeof(int);
+
+    // Allocate memory on host
+    int *h_a = (int *)malloc(size);
+    int *h_b = (int *)malloc(size);
+    int *h_c = (int *)malloc(size);
+
+    // Fill vectors with random data
+    fillArray(h_a, N);
+    fillArray(h_b, N);
+
+    // Allocate memory on device
+    int *d_a, *d_b, *d_c;
+    cudaMalloc((void **)&d_a, size);
+    cudaMalloc((void **)&d_b, size);
+    cudaMalloc((void **)&d_c, size);
+
+    // Copy vectors to device
+    cudaMemcpy(d_a, h_a, size, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, h_b, size, cudaMemcpyHostToDevice);
+
+    // Launch the kernel
+    int threadsPerBlock = 256;
+    int blocksPerGrid = (N + threadsPerBlock - 1) / threadsPerBlock;
+    vectorAdd<<<blocksPerGrid, threadsPerBlock>>>(d_a, d_b, d_c, N);
+
+    // Copy result back to host
+    cudaMemcpy(h_c, d_c, size, cudaMemcpyDeviceToHost);
+
+    // Print first 10 results for verification
+    printf("Vector Addition Result (first 10 elements):\n");
+    for (int i = 0; i < 10; i++) {
+        printf("%d + %d = %d\n", h_a[i], h_b[i], h_c[i]);
+    }
+
+    // Free memory
+    free(h_a); free(h_b); free(h_c);
+    cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
+
+    return 0;
+}
